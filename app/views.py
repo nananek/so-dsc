@@ -38,6 +38,15 @@ def index():
     return render_template("index.html")
 
 
+@bp.route("/embed")
+def embed():
+    """Chrome-free fullscreen liveview page, designed for OBS Browser
+    Source. Loading this URL in OBS and enabling OBS Virtual Camera
+    publishes the camera to Zoom / Meet / FaceTime / etc. — see README
+    for the exact OBS settings."""
+    return render_template("embed.html")
+
+
 # ---------- liveview ----------
 
 @bp.route("/stream")

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>so-dsc embed</title>
+  <style>
+    /* No chrome — designed to be loaded as an OBS Browser Source.
+       The <img> fills the viewport at native aspect, the rest is solid
+       black so OBS's transparent crop / chroma options have something
+       sane to work with. */
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+    .stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+    .stage img { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
+    /* Auto-reload on broken stream. The MJPEG fan-out keeps the
+       connection open; on liveview teardown the <img> will go gray, and
+       this script re-attaches it to a fresh request so OBS doesn't have
+       to be cycled. */
+  </style>
+</head>
+<body>
+  <div class="stage"><img id="live" src="/stream" alt=""></div>
+<script>
+const img = document.getElementById('live');
+img.addEventListener('error', () => {
+  setTimeout(() => { img.src = '/stream?t=' + Date.now(); }, 1000);
+});
+// Re-attach periodically anyway — multipart streams sometimes silently
+// stall in CEF (OBS browser) without firing 'error'. Cheap belt-and-
+// suspenders since the server fan-out is keep-alive.
+setInterval(() => {
+  // Only reload if no fresh frame in ~5s. We use a side-channel ping
+  // to /api/status; if liveview idle is high, kick the img.
+  fetch('/api/status').then(r => r.json()).then(s => {
+    const idle = (s.client || {}).idle_seconds;
+    if (idle === null || idle > 5) {
+      img.src = '/stream?t=' + Date.now();
+    }
+  }).catch(() => {});
+}, 8000);
+</script>
+</body>
+</html>

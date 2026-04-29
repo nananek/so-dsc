@@ -58,9 +58,34 @@ SODSC_HOST=192.168.122.1 python run.py
   - **DLNA 経路ではフル解像度 RAW (.ARW) は取れない** — Sony 仕様の制約
 - AI 撮影係用 MCP サーバ (Claude Code 等から 18 ツール経由で操作)
 
-未実装 / 別プロジェクト:
-- **仮想カメラデバイス出力** — macOS 13+ 用の CoreMediaIO Camera Extension で
-  別途実装予定。本リポジトリの `/stream` を pull する形を想定。
+仮想カメラ出力 (Zoom / Meet / FaceTime 等):
+- **OBS Studio の Virtual Camera 経由** で対応。ネイティブ実装は不要 — OBS が
+  Mac/Win/Linux 全部に対応してくれる。詳細は下記「仮想カメラとして使う」を参照。
+
+## 仮想カメラとして使う (OBS 経由)
+
+Zoom / Google Meet / FaceTime / QuickTime などに **RX100M5A のライブビューを
+仮想カメラとして見せる** やり方。OBS Studio の Virtual Camera 機能を中継に
+するので、ネイティブ Camera Extension / DAL plugin は不要、Mac/Win/Linux
+共通で動きます。
+
+1. **OBS Studio** をインストール (https://obsproject.com)
+2. so-dsc Flask サーバを起動 (`python run.py`)
+3. OBS で **Browser Source** を追加:
+   - URL: `http://127.0.0.1:5050/embed` (PORT が違う場合は合わせる)
+   - Width: `640` / Height: `424` (Sony liveview ネイティブ)
+   - 「Shutdown source when not visible」「Refresh browser when scene becomes active」
+     はお好みで (推奨: ONになってると配信状態が安定する)
+4. シーンに Browser Source を配置・サイズ調整
+5. OBS の右下 **Start Virtual Camera** をクリック
+6. Zoom / Meet / FaceTime のカメラ選択で **OBS Virtual Camera** を選ぶ
+
+`/embed` は OBS Browser Source 用のクロームレスページ — 全画面 `<img>` で
+liveview を表示し、stale 検知で `<img>` を自動再アタッチします
+(配信中にカメラが一瞬切れても OBS 側を再起動しなくて済む)。
+
+OBS の他のソース (テロップ、ロゴ、別カメラ、スクリーンキャプチャ) と
+合成できるのも便乗のうれしさ。
 
 ## 動画記録
 
