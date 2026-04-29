@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>so-dsc viewer</title>
+  <link href="{{ url_for('static', filename='bootstrap.min.css') }}" rel="stylesheet">
+  <style>
+    .stage { background: #111; border-radius: .5rem; padding: .5rem; position: relative; }
+    .stage img { display: block; width: 100%; height: auto; max-height: 75vh; object-fit: contain; background: #000; border-radius: .25rem; }
+    .stage.no-signal img { opacity: .25; }
+    .stage .overlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; color: #ddd; pointer-events: none; }
+    .stage.no-signal .overlay { display: flex; }
+    .meta { font-variant-numeric: tabular-nums; }
+    .recordings .item, .content .item { display: flex; gap: .75rem; align-items: center; padding: .25rem 0; border-bottom: 1px solid #eee; }
+    .recordings .item img, .content .item img { width: 56px; height: 56px; object-fit: cover; border-radius: .25rem; background: #222; }
+    .content-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: .5rem; max-height: 60vh; overflow-y: auto; }
+    .content-grid .tile { position: relative; aspect-ratio: 1/1; background: #222; border-radius: .25rem; overflow: hidden; }
+    .content-grid .tile img { width: 100%; height: 100%; object-fit: cover; }
+    .content-grid .tile .badge-kind { position: absolute; top: 4px; left: 4px; }
+    .content-grid .tile .actions { position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,.55); display: flex; justify-content: space-between; padding: 2px 4px; }
+    .content-grid .tile .actions a { color: #fff; font-size: .8rem; text-decoration: none; }
+  </style>
+</head>
+<body class="bg-light">
+  <nav class="navbar navbar-dark bg-dark mb-3">
+    <div class="container-fluid">
+      <span class="navbar-brand mb-0 h5">so-dsc viewer</span>
+      <span class="text-light meta small" id="status-line">connecting...</span>
+    </div>
+  </nav>
+
+  <main class="container-fluid pb-5">
+    <ul class="nav nav-tabs mb-3" id="main-tabs" role="tablist">
+      <li class="nav-item"><button class="nav-link active" id="tab-shoot" data-bs-target="#pane-shoot" type="button">Shoot</button></li>
+      <li class="nav-item"><button class="nav-link" id="tab-content" data-bs-target="#pane-content" type="button">Camera content</button></li>
+      <li class="nav-item"><button class="nav-link" id="tab-recordings" data-bs-target="#pane-recordings" type="button">Liveview recordings</button></li>
+    </ul>
+
+    <div class="tab-content">
+      <!-- Shoot pane -->
+      <section class="tab-pane show active" id="pane-shoot">
+        <div class="row g-3">
+          <div class="col-lg-8">
+            <div class="stage" id="stage">
+              <img src="/stream" alt="live stream" id="live">
+              <div class="overlay">
+                <div class="text-center">
+                  <div class="fs-5 mb-2">no signal</div>
+                  <div class="small text-muted" id="no-signal-hint">switch the camera to Remote Shooting</div>
+                </div>
+              </div>
+            </div>
+            <div class="d-flex gap-2 mt-2 align-items-center flex-wrap">
+              <button class="btn btn-danger" id="btn-shoot">● Shoot</button>
+              <button class="btn btn-outline-secondary btn-sm" id="btn-half" title="Hold for AF">AF (hold)</button>
+              <div class="btn-group btn-group-sm" role="group" aria-label="Zoom">
+                <button class="btn btn-outline-secondary" id="btn-zoom-out">−</button>
+                <button class="btn btn-outline-secondary" id="btn-zoom-in">+</button>
+              </div>
+              <button class="btn btn-outline-secondary btn-sm" id="btn-snap">Snapshot</button>
+              <button class="btn btn-outline-danger btn-sm" id="btn-rec">Record liveview</button>
+              <button class="btn btn-outline-primary btn-sm" id="btn-reconnect" title="After camera power-cycle">Reconnect</button>
+              <span class="meta small text-muted ms-auto" id="rec-meta"></span>
+            </div>
+            <div class="small text-muted mt-2" id="postview-line"></div>
+          </div>
+
+          <div class="col-lg-4">
+            <div class="card mb-3">
+              <div class="card-body">
+                <h6 class="card-title">Camera mode</h6>
+                <div class="btn-group w-100" role="group">
+                  <input type="radio" class="btn-check" name="cam-mode" id="mode-shoot" value="Remote Shooting" checked>
+                  <label class="btn btn-outline-primary" for="mode-shoot">Remote Shooting</label>
+                  <input type="radio" class="btn-check" name="cam-mode" id="mode-xfer" value="Contents Transfer">
+                  <label class="btn btn-outline-primary" for="mode-xfer">Contents Transfer</label>
+                </div>
+                <div class="small text-muted mt-2" id="mode-hint">switching mode takes a few seconds.</div>
+              </div>
+            </div>
+
+            <div class="card mb-3">
+              <div class="card-body">
+                <h6 class="card-title">Settings</h6>
+                <label class="form-label small mb-1">Shoot mode</label>
+                <select class="form-select form-select-sm mb-2" id="set-shoot-mode">
+                  <option value="">(unchanged)</option>
+                  <option value="still">still</option>
+                  <option value="movie">movie</option>
+                  <option value="intervalstill">intervalstill</option>
+                  <option value="audio">audio</option>
+                </select>
+                <div class="row g-2">
+                  <div class="col">
+                    <label class="form-label small mb-1">ISO</label>
+                    <input class="form-control form-control-sm" id="set-iso" placeholder="AUTO / 100 / 400 ...">
+                  </div>
+                  <div class="col">
+                    <label class="form-label small mb-1">Shutter</label>
+                    <input class="form-control form-control-sm" id="set-shutter" placeholder="1/250">
+                  </div>
+                </div>
+                <div class="row g-2 mt-1">
+                  <div class="col">
+                    <label class="form-label small mb-1">F</label>
+                    <input class="form-control form-control-sm" id="set-fnumber" placeholder="5.6">
+                  </div>
+                  <div class="col">
+                    <label class="form-label small mb-1">EV</label>
+                    <input class="form-control form-control-sm" id="set-ev" placeholder="0">
+                  </div>
+                </div>
+                <div class="small text-muted mt-2">Strings must match what the camera advertises (see <code>/api/status</code> → <code>event.exposureCompensation</code> etc).</div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-body">
+                <h6 class="card-title">Battery</h6>
+                <div class="meta" id="battery">—</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Content pane -->
+      <section class="tab-pane" id="pane-content" style="display:none;">
+        <div class="d-flex align-items-center mb-2 gap-2">
+          <button class="btn btn-sm btn-outline-primary" id="btn-content-load">Load list</button>
+          <span class="small text-muted" id="content-meta"></span>
+          <span class="small text-warning ms-auto" id="content-warning"></span>
+        </div>
+        <div class="content-grid" id="content-grid"></div>
+      </section>
+
+      <!-- Recordings pane -->
+      <section class="tab-pane" id="pane-recordings" style="display:none;">
+        <div class="recordings card">
+          <div class="card-body">
+            <h6 class="card-title">Local liveview recordings (.mjpeg)</h6>
+            <div id="rec-list" class="small"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => Array.from(document.querySelectorAll(s));
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) {
+    const t = await r.text().catch(() => '');
+    throw new Error(`${path}: ${r.status} ${t}`);
+  }
+  return r.json();
+}
+
+async function postJSON(path, body) {
+  return api(path, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body || {}),
+  });
+}
+
+// ---------- tab switching (no bootstrap JS needed) ----------
+$$('#main-tabs button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    $$('#main-tabs button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    $$('.tab-pane').forEach(p => { p.style.display = 'none'; p.classList.remove('show', 'active'); });
+    const target = document.querySelector(btn.dataset.bsTarget);
+    target.style.display = '';
+    target.classList.add('show', 'active');
+  });
+});
+
+// ---------- shoot ----------
+$('#btn-shoot').addEventListener('click', async () => {
+  const btn = $('#btn-shoot');
+  btn.disabled = true;
+  try {
+    const r = await postJSON('/api/shoot');
+    if (r.postview && r.postview.length) {
+      const url = r.postview[0];
+      // Display the postview by routing through our proxy (avoids cross-host
+      // surprises for the browser).
+      const proxy = '/api/content/proxy?url=' + encodeURIComponent(url);
+      $('#postview-line').innerHTML = `<a href="${proxy}" target="_blank">postview ${url.split('/').pop()}</a>`;
+    } else {
+      $('#postview-line').textContent = 'shot, but no postview URL';
+    }
+  } catch (e) {
+    $('#postview-line').textContent = String(e);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+let halfDown = false;
+async function setHalf(on) {
+  if (halfDown === on) return;
+  halfDown = on;
+  try { await postJSON('/api/half_press', { on }); }
+  catch (e) { console.error(e); halfDown = false; }
+}
+$('#btn-half').addEventListener('mousedown', () => setHalf(true));
+$('#btn-half').addEventListener('mouseup', () => setHalf(false));
+$('#btn-half').addEventListener('mouseleave', () => { if (halfDown) setHalf(false); });
+$('#btn-half').addEventListener('touchstart', (e) => { e.preventDefault(); setHalf(true); }, { passive: false });
+$('#btn-half').addEventListener('touchend', () => setHalf(false));
+
+$('#btn-zoom-in').addEventListener('click', () => postJSON('/api/zoom', { direction: 'in' }).catch(console.error));
+$('#btn-zoom-out').addEventListener('click', () => postJSON('/api/zoom', { direction: 'out' }).catch(console.error));
+
+$('#btn-snap').addEventListener('click', () => {
+  const a = document.createElement('a');
+  a.href = '/snapshot.jpg?t=' + Date.now();
+  a.download = `sodsc_${new Date().toISOString().replace(/[:.]/g,'-')}.jpg`;
+  a.click();
+});
+
+// ---------- settings ----------
+function bindSetting(id, name) {
+  const el = $('#' + id);
+  let last = el.value;
+  el.addEventListener('change', async () => {
+    const v = el.value.trim();
+    if (!v || v === last) return;
+    try {
+      await postJSON('/api/setting', { name, value: name === 'ev' ? parseInt(v, 10) : v });
+      last = v;
+    } catch (e) {
+      alert(`${name}: ${e.message}`);
+      el.value = last;
+    }
+  });
+}
+bindSetting('set-shoot-mode', 'shoot_mode');
+bindSetting('set-iso', 'iso');
+bindSetting('set-shutter', 'shutter');
+bindSetting('set-fnumber', 'fnumber');
+bindSetting('set-ev', 'ev');
+
+// ---------- mode ----------
+$$('input[name=cam-mode]').forEach(r => {
+  r.addEventListener('change', async () => {
+    const target = r.value;
+    $('#mode-hint').textContent = `switching to ${target} ...`;
+    try {
+      await postJSON('/api/mode', { mode: target });
+      $('#mode-hint').textContent = `mode = ${target}`;
+      // Re-attach liveview to start a fresh stream.
+      $('#live').src = '/stream?t=' + Date.now();
+    } catch (e) {
+      $('#mode-hint').textContent = String(e);
+    }
+  });
+});
+
+// ---------- recording (liveview .mjpeg) ----------
+let isRecording = false;
+async function refreshRecList() {
+  const r = await api('/api/recordings');
+  const el = $('#rec-list');
+  if (!r.recordings.length) { el.textContent = '(none)'; return; }
+  el.innerHTML = '';
+  for (const item of r.recordings) {
+    const row = document.createElement('div');
+    row.className = 'item';
+    const sizeKB = (item.size_bytes / 1024).toFixed(0);
+    row.innerHTML = `
+      <img src="/api/recordings/${item.name}/preview.jpg" alt="">
+      <div class="flex-grow-1">
+        <div>${item.name}</div>
+        <div class="text-muted small">${sizeKB} KB</div>
+      </div>
+      <a class="btn btn-sm btn-outline-secondary" href="/api/recordings/${item.name}/download">DL</a>
+    `;
+    el.appendChild(row);
+  }
+}
+
+$('#btn-rec').addEventListener('click', async () => {
+  if (isRecording) {
+    await postJSON('/api/recordings/stop');
+  } else {
+    await postJSON('/api/recordings/start');
+  }
+  refreshStatus();
+  refreshRecList();
+});
+
+$('#btn-reconnect').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = '...';
+  try {
+    await postJSON('/api/reconnect');
+    // Re-attach the <img> so the browser opens a fresh /stream connection
+    const img = $('#live');
+    img.src = '/stream?t=' + Date.now();
+  } catch (err) {
+    alert('reconnect failed: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+    refreshStatus();
+  }
+});
+
+// ---------- camera content browser ----------
+$('#btn-content-load').addEventListener('click', async () => {
+  const meta = $('#content-meta');
+  const warn = $('#content-warning');
+  warn.textContent = '';
+  meta.textContent = 'loading...';
+  try {
+    const r = await api('/api/content/list?offset=0&count=200');
+    meta.textContent = `${(r.items || []).length} / ${r.total} items (source: ${r.source || 'n/a'})`;
+    const grid = $('#content-grid');
+    grid.innerHTML = '';
+    for (const it of (r.items || [])) {
+      const tile = document.createElement('div');
+      tile.className = 'tile';
+      const thumb = it.thumbnailUrl ? `/api/content/proxy?url=${encodeURIComponent(it.thumbnailUrl)}` : '';
+      const orig = it.originalUrl ? `/api/content/proxy?url=${encodeURIComponent(it.originalUrl)}&download=1&name=${encodeURIComponent(it.originalFilename || '')}` : '';
+      const view = it.largeUrl || it.originalUrl;
+      const viewProxy = view ? `/api/content/proxy?url=${encodeURIComponent(view)}` : '';
+      tile.innerHTML = `
+        ${thumb ? `<img src="${thumb}" loading="lazy" alt="">` : ''}
+        <span class="badge bg-dark text-light badge-kind small">${it.contentKind || ''}</span>
+        <div class="actions">
+          ${viewProxy ? `<a href="${viewProxy}" target="_blank" title="view">view</a>` : '<span></span>'}
+          ${orig ? `<a href="${orig}" title="download original">DL</a>` : ''}
+        </div>
+      `;
+      grid.appendChild(tile);
+    }
+  } catch (e) {
+    meta.textContent = '';
+    warn.textContent = String(e);
+  }
+});
+
+// ---------- status poll ----------
+async function refreshStatus() {
+  let s;
+  try { s = await api('/api/status'); }
+  catch (e) { $('#status-line').textContent = 'down: ' + e.message; return; }
+
+  isRecording = s.recording.recording;
+  const btn = $('#btn-rec');
+  btn.classList.toggle('btn-outline-danger', !isRecording);
+  btn.classList.toggle('btn-danger', isRecording);
+  btn.textContent = isRecording ? '■ Stop recording' : 'Record liveview';
+  if (isRecording) {
+    $('#rec-meta').textContent = `${s.recording.frames} frames · ${s.recording.duration.toFixed(1)}s`;
+  } else {
+    $('#rec-meta').textContent = '';
+  }
+
+  const idle = s.client.idle_seconds;
+  const noSignal = idle === null || idle > 3;
+  $('#stage').classList.toggle('no-signal', noSignal);
+  const idleStr = idle === null ? 'no frames yet' : `${idle.toFixed(1)}s idle`;
+  const mode = s.client.mode || '?';
+  $('#status-line').textContent =
+    `[${mode}] ${s.client.frames_seen} frames · seq=${s.client.seq} · ${idleStr} · subs=${s.client.subscribers}`;
+
+  // Reflect device-side mode change in the radio buttons (server might toggle
+  // due to user pressing the camera's Wi-Fi button, etc).
+  if (s.client.mode === 'Remote Shooting') $('#mode-shoot').checked = true;
+  else if (s.client.mode === 'Contents Transfer') $('#mode-xfer').checked = true;
+
+  // Disable the Contents Transfer radio when the camera doesn't expose
+  // setCameraFunction (RX100M5A Smart Remote Control does this) — pressing
+  // it would just teardown the liveview for nothing.
+  const apis = s.client.available_apis || [];
+  const canSoftSwitch = apis.includes('setCameraFunction');
+  const xferRadio = $('#mode-xfer');
+  xferRadio.disabled = !canSoftSwitch;
+  if (!canSoftSwitch) {
+    $('#mode-hint').textContent =
+      'this camera doesn\'t expose setCameraFunction. Switch the in-camera app to "Send to Smartphone" on the body to use Camera content.';
+  }
+
+  // Battery: shape depends on getEvent slot. Try a couple of layouts.
+  const bat = s.client.battery || (s.event && s.event.batteryInfo && (s.event.batteryInfo.batteryInfo || [])[0]);
+  const batEl = $('#battery');
+  if (bat) {
+    const pct = bat.levelNumer && bat.levelDenom
+      ? Math.round(100 * bat.levelNumer / bat.levelDenom)
+      : (typeof bat.percent === 'number' ? bat.percent : null);
+    batEl.innerHTML = pct == null
+      ? `<span class="meta">${bat.batteryID || '?'}</span>`
+      : `<span class="fs-5">${pct}<small class="text-muted">/100</small></span> <span class="small text-muted">${bat.status || ''}</span>`;
+  } else {
+    batEl.textContent = '—';
+  }
+}
+
+refreshStatus();
+refreshRecList();
+setInterval(refreshStatus, 1000);
+</script>
+</body>
+</html>
