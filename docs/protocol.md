@@ -216,6 +216,21 @@ RX100M5A は IP/ポート固定なので、IP が既知なら SSDP は省略し�
 |---|---|
 | `getEvent` | 引数 `[longPoll(bool)]`。`longPoll=true` だと変化があるまで待つ。`result` は state スロット配列 (バッテリ/シャッタースピード/ストレージ情報など) |
 
+`getEvent` は `version` で返す slot 数が変わる **数少ないメソッド**。RX100M5A 実測:
+
+| version | 全 slot 位置数 | 中身が来る slot |
+|---|---|---|
+| 1.0 | 35 | 14 (availableApiList, cameraStatus, zoomInformation, liveviewStatus, exposureMode, selfTimer, shootMode, exposureCompensation, flashMode, fNumber, isoSpeedRate, programShift, shutterSpeed, whiteBalance) |
+| 1.1 | 36 | 15 (上記 + **focusStatus**) |
+| 1.2 | 60 | 16 (上記 + **contShootingMode**) |
+| 1.3 | 63 | 16 (1.2 と同じ。空 slot が 3 本増えてるが、本機ファームでは中身は来ない — 別機種/将来ファームの予約枠と思われる) |
+
+本実装は **v1.2 を採用**。RX100M5A では v1.3 で実中身が増えないため、保
+守的に最小バージョンを選択。別機種で v1.3 の追加 slot に意味があるなら
+個別に上げる。
+
+**`focusStatus`** の値遷移 (実測): 半押し前 `Not Focusing` → 半押し直後 `Focusing` (~50ms) → 合焦 `Focused` (~150ms) / 失敗 `Failed`。`actTakePicture` に進む前に `Focused` を待つことで、暗所/低コントラストの被写体での "ぼけ撮影" を排除できる。
+
 ### 3.2 avContent サービス (`/sony/avContent`)
 
 階層: scheme → source → contents。

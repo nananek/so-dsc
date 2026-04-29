@@ -85,6 +85,13 @@ class SonyClient:
         self._mode: Optional[str] = None  # "Remote Shooting" / "Contents Transfer"
         self._shoot_mode: Optional[str] = None
         self._battery: Optional[dict] = None
+        # Slots populated from getEvent v1.2 (lowest version that exposes
+        # focusStatus + contShootingMode on RX100M5A).
+        self._focus_status: Optional[str] = None  # "Focused" / "Failed" / "Not Focusing" / "Focusing"
+        self._camera_status: Optional[str] = None  # "IDLE" / "StillCapturing" / "MovieRecording" / ...
+        self._cont_shooting_mode: Optional[str] = None  # "Single" / "Continuous" / "Spd Priority Cont." / ...
+        # Convenience snapshot of current exposure for the AI.
+        self._exposure: dict = {}
         self._available_apis: list[str] = []
         self._event_thread: Optional[threading.Thread] = None
         self._event_running = False
@@ -177,6 +184,10 @@ class SonyClient:
             self._poll_sess = self._cmd_sess
             self._available_apis = []
             self._event_state = {}
+            self._focus_status = None
+            self._camera_status = None
+            self._cont_shooting_mode = None
+            self._exposure = {}
 
             # Best-effort: re-fetch DD.xml in case the camera came back with
             # different ports. Skip if we never had a host.
@@ -289,19 +300,59 @@ class SonyClient:
             self._shoot_mode = r[0]
         return self._shoot_mode
 
-    def act_take_picture(self) -> list[str]:
+    def act_take_picture(self, af_timeout: float = 2.0) -> list[str]:
         """Returns the list of postview URLs (usually 1).
 
-        Wraps the call in actHalfPressShutter / cancelHalfPressShutter —
-        Sony's reference Camera Remote sample app does the same. Without
-        the half-press prefix, RX100M5A in Flexible Spot focus area
-        rejects actTakePicture with the misleading error `[40400, '']`
-        (which the spec documents as "Already Polling" but here means
-        "AF not locked, please half-press first")."""
+        Wraps the call in actHalfPressShutter / poll focusStatus until
+        Focused / actTakePicture / cancelHalfPressShutter — the same
+        sequence Sony's reference Camera Remote sample app uses. Without
+        the half-press prefix, RX100M5A in Flexible Spot rejects
+        actTakePicture with the misleading error `[40400, '']` (the spec
+        documents this as "Already Polling" but here it means "AF not
+        locked, please half-press first").
+
+        Polling focusStatus instead of a fixed sleep avoids two
+        symmetric failure modes: shooting too early (motion blur on a
+        slow-AF subject) and waiting too long (lag in interactive
+        sessions). Raises SonyApiError("Failed") if AF reports Failed
+        or never reaches Focused before af_timeout."""
         try:
             self.call("camera", "actHalfPressShutter")
         except SonyApiError as e:
             log.debug("actHalfPressShutter pre-shoot: %s", e)
+
+        # Poll focusStatus from getEvent until Focused / Failed / timeout.
+        # The first 50–150 ms can still be "Not Focusing" before the
+        # half-press takes effect, so don't bail on that initial value.
+        deadline = time.time() + af_timeout
+        last_status: Optional[str] = None
+        while time.time() < deadline:
+            try:
+                ev = self.call(
+                    "camera", "getEvent", [False], version="1.2", timeout=3.0
+                )
+            except (SonyApiError, requests.RequestException):
+                break
+            for slot in ev or []:
+                if isinstance(slot, dict) and slot.get("type") == "focusStatus":
+                    last_status = slot.get("focusStatus")
+                    break
+            if last_status == "Focused":
+                break
+            if last_status == "Failed":
+                # Still proceed to clean up half-press, then surface to caller.
+                try:
+                    self.call("camera", "cancelHalfPressShutter", timeout=3.0)
+                except (SonyApiError, requests.RequestException):
+                    pass
+                raise SonyApiError("actTakePicture", -1, "AF Failed")
+            time.sleep(0.05)
+        if last_status != "Focused":
+            log.info(
+                "AF didn't reach Focused within %.1fs (last=%r) — shooting anyway",
+                af_timeout, last_status,
+            )
+
         try:
             r = self.call("camera", "actTakePicture", timeout=15.0)
         finally:
@@ -379,11 +430,17 @@ class SonyClient:
         backoff = 1.0
         while self._event_running:
             try:
+                # v1.2 adds the slots we actually use over v1.0:
+                #   - focusStatus (v1.1+) — AF state for the take_picture wrap
+                #   - contShootingMode (v1.2+) — burst mode setting
+                # v1.3 adds 3 more slot positions but on RX100M5A they
+                # never carry data, so we stick to the more conservative
+                # v1.2 spec.
                 r = self.call(
                     "camera",
                     "getEvent",
                     [False],
-                    version="1.0",
+                    version="1.2",
                     timeout=8.0,
                     sess=self._poll_sess,
                 )
@@ -422,6 +479,27 @@ class SonyClient:
                     apis = slot.get("names") or slot.get("availableApiList")
                     if isinstance(apis, list):
                         self._available_apis = list(apis)
+                elif t == "focusStatus":
+                    self._focus_status = slot.get("focusStatus")
+                elif t == "cameraStatus":
+                    self._camera_status = slot.get("cameraStatus")
+                elif t == "contShootingMode":
+                    self._cont_shooting_mode = slot.get("contShootingMode")
+                elif t == "isoSpeedRate":
+                    self._exposure["iso"] = slot.get("currentIsoSpeedRate")
+                elif t == "shutterSpeed":
+                    self._exposure["shutter"] = slot.get("currentShutterSpeed")
+                elif t == "fNumber":
+                    self._exposure["fnumber"] = slot.get("currentFNumber")
+                elif t == "exposureCompensation":
+                    self._exposure["ev"] = slot.get("currentExposureCompensation")
+                elif t == "exposureMode":
+                    self._exposure["exposure_mode"] = slot.get("currentExposureMode")
+                elif t == "whiteBalance":
+                    self._exposure["wb_mode"] = slot.get("currentWhiteBalanceMode")
+                    self._exposure["wb_kelvin"] = slot.get("currentColorTemperature")
+                elif t == "zoomInformation":
+                    self._exposure["zoom_position"] = slot.get("zoomPosition")
 
     def event_state(self) -> dict:
         with self._event_lock:
@@ -839,6 +917,10 @@ class SonyClient:
             "mode": self._mode,
             "shoot_mode": self._shoot_mode,
             "battery": self._battery,
+            "focus_status": self._focus_status,
+            "camera_status": self._camera_status,
+            "cont_shooting_mode": self._cont_shooting_mode,
+            "exposure": dict(self._exposure),
             "available_apis": list(self._available_apis),
             "liveview_url": self._lv_url,
             "needs_reconnect": self._needs_reconnect,
