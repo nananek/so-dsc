@@ -257,6 +257,30 @@ def stop_bulb() -> str:
     return json.dumps(_post("/api/bulb/stop"))
 
 
+# ---------- movie recording (camera SD) ----------
+
+@mcp.tool()
+def start_movie_rec() -> str:
+    """Start recording a movie to the camera's SD card (NOT to the
+    host). Requires the camera dial to be on the movie position on
+    RX100M5A — `setShootMode` is not exposed in Smart Remote, so the
+    physical dial controls this. Once started, get_status →
+    event.cameraStatus.cameraStatus reports "MovieRecording". Pair with
+    stop_movie_rec.
+
+    The full movie file is reachable later via Send-to-Smartphone mode
+    (UPnP) or a direct SD-card read."""
+    return json.dumps(_post("/api/movie/start"))
+
+
+@mcp.tool()
+def stop_movie_rec() -> str:
+    """Stop in-progress movie recording. Returns a postview URL (small
+    JPEG thumbnail of the just-finished clip). The actual movie file
+    stays on the camera SD card."""
+    return json.dumps(_post("/api/movie/stop"))
+
+
 # ---------- saved pictures ----------
 
 @mcp.tool()

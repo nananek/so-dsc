@@ -13,8 +13,7 @@ venv/
 # Reverse engineering / working set — not for the repo
 work/
 
-# User recordings + downloaded camera content
-recordings/
+# Downloaded camera content
 downloads/
 
 # Editor

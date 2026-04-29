@@ -444,6 +444,32 @@ class SonyClient:
     def stop_bulb_shooting(self) -> None:
         self.call("camera", "stopBulbShooting")
 
+    def start_movie_rec(self) -> None:
+        """Start recording a movie to the camera SD card.
+
+        Pre-conditions:
+        * Shoot mode must be `movie`. On RX100M5A, `setShootMode` is not
+          exposed in Smart Remote Control, so the camera dial has to be
+          set to the movie position physically. `startMovieRec` only
+          appears in `getAvailableApiList` when the camera body is in
+          movie mode.
+        * Camera must not already be recording.
+
+        Use `cameraStatus` from getEvent ("MovieRecording" while
+        recording) to drive UI state.
+        """
+        self.call("camera", "startMovieRec")
+
+    def stop_movie_rec(self) -> str:
+        """Stop the in-progress movie recording. Returns the postview
+        URL the camera produces (a JPEG thumbnail of the movie). The
+        full movie file lives on the SD card and is reachable later
+        via Send-to-Smartphone mode (UPnP)."""
+        r = self.call("camera", "stopMovieRec")
+        if isinstance(r, list) and r and isinstance(r[0], str):
+            return r[0]
+        return ""
+
     def half_press(self, on: bool) -> None:
         method = "actHalfPressShutter" if on else "cancelHalfPressShutter"
         self.call("camera", method)

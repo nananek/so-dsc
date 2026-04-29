@@ -1,4 +1,4 @@
-"""Flask routes for the so-dsc viewer/recorder."""
+"""Flask routes for the so-dsc viewer + remote control + content browser."""
 from __future__ import annotations
 
 import queue
@@ -25,10 +25,6 @@ bp = Blueprint("sodsc", __name__)
 
 def _client():
     return current_app.config["SONY_CLIENT"]
-
-
-def _recorder():
-    return current_app.config["SONY_RECORDER"]
 
 
 def _browser():
@@ -87,7 +83,6 @@ def snapshot():
 def api_status():
     return jsonify({
         "client": _client().stats(),
-        "recording": _recorder().status(),
         "event": _client().event_state(),
     })
 
@@ -226,6 +221,33 @@ def api_bulb_stop():
     return jsonify({"running": False})
 
 
+@bp.route("/api/movie/start", methods=["POST"])
+def api_movie_start():
+    """Start camera-side movie recording (records to SD card).
+
+    Requires the camera dial to be on the movie position on RX100M5A
+    (setShootMode is not exposed). Check `event.cameraStatus.cameraStatus
+    == "MovieRecording"` to know it actually started.
+    """
+    try:
+        _client().start_movie_rec()
+    except SonyApiError as e:
+        abort(409, str(e))
+    return jsonify({"recording": True})
+
+
+@bp.route("/api/movie/stop", methods=["POST"])
+def api_movie_stop():
+    """Stop the camera-side movie recording. Returns the postview URL
+    (small JPEG thumbnail) of the just-finished movie. The actual
+    movie file stays on the SD card."""
+    try:
+        postview = _client().stop_movie_rec()
+    except SonyApiError as e:
+        abort(409, str(e))
+    return jsonify({"recording": False, "postview": postview})
+
+
 @bp.route("/api/half_press", methods=["POST"])
 def api_half_press():
     body = request.get_json(silent=True) or {}
@@ -354,42 +376,3 @@ def downloads_file(name: str):
     return send_file(p, as_attachment=True)
 
 
-# ---------- liveview recording (.mjpeg) ----------
-
-@bp.route("/api/recordings", methods=["GET"])
-def api_list_recordings():
-    return jsonify({"recordings": _recorder().list()})
-
-
-@bp.route("/api/recordings/start", methods=["POST"])
-def api_record_start():
-    rec = _recorder()
-    if rec.is_recording():
-        abort(409, "already recording")
-    info = rec.start()
-    return jsonify(info)
-
-
-@bp.route("/api/recordings/stop", methods=["POST"])
-def api_record_stop():
-    info = _recorder().stop()
-    if info is None:
-        abort(409, "not recording")
-    return jsonify(info)
-
-
-@bp.route("/api/recordings/<name>/preview.jpg")
-def api_recording_preview(name: str):
-    jpeg = _recorder().first_frame(name)
-    if jpeg is None:
-        abort(404)
-    return Response(jpeg, mimetype="image/jpeg")
-
-
-@bp.route("/api/recordings/<name>/download")
-def api_recording_download(name: str):
-    p: Path | None = _recorder().file_path(name)
-    if p is None:
-        abort(404)
-    return send_file(p, as_attachment=True, download_name=f"{name}.mjpeg",
-                     mimetype="video/x-motion-jpeg")

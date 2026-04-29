@@ -17,8 +17,8 @@
     .mode-banner { display: none; }
     .mode-banner.show { display: block; }
     .meta { font-variant-numeric: tabular-nums; }
-    .recordings .item, .content .item { display: flex; gap: .75rem; align-items: center; padding: .25rem 0; border-bottom: 1px solid #eee; }
-    .recordings .item img, .content .item img { width: 56px; height: 56px; object-fit: cover; border-radius: .25rem; background: #222; }
+    .content .item { display: flex; gap: .75rem; align-items: center; padding: .25rem 0; border-bottom: 1px solid #eee; }
+    .content .item img { width: 56px; height: 56px; object-fit: cover; border-radius: .25rem; background: #222; }
     .content-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: .5rem; max-height: 60vh; overflow-y: auto; }
     .content-grid .tile { position: relative; aspect-ratio: 1/1; background: #222; border-radius: .25rem; overflow: hidden; }
     .content-grid .tile img { width: 100%; height: 100%; object-fit: cover; }
@@ -39,7 +39,6 @@
     <ul class="nav nav-tabs mb-3" id="main-tabs" role="tablist">
       <li class="nav-item"><button class="nav-link active" id="tab-shoot" data-bs-target="#pane-shoot" type="button">Shoot</button></li>
       <li class="nav-item"><button class="nav-link" id="tab-content" data-bs-target="#pane-content" type="button">Camera content</button></li>
-      <li class="nav-item"><button class="nav-link" id="tab-recordings" data-bs-target="#pane-recordings" type="button">Liveview recordings</button></li>
     </ul>
 
     <div class="tab-content">
@@ -70,9 +69,9 @@
                 <button class="btn btn-outline-secondary" id="btn-zoom-in">+</button>
               </div>
               <button class="btn btn-outline-secondary btn-sm" id="btn-snap">Snapshot</button>
-              <button class="btn btn-outline-danger btn-sm" id="btn-rec">Record liveview</button>
+              <button class="btn btn-outline-danger btn-sm" id="btn-movie" title="Start/stop movie recording (camera dial must be on movie position)">● Movie REC</button>
               <button class="btn btn-outline-primary btn-sm" id="btn-reconnect" title="After camera power-cycle">Reconnect</button>
-              <span class="meta small text-muted ms-auto" id="rec-meta"></span>
+              <span class="meta small text-muted ms-auto" id="movie-meta"></span>
             </div>
             <div class="small text-muted mt-2" id="postview-line"></div>
           </div>
@@ -154,15 +153,6 @@
         <div class="content-grid" id="content-grid"></div>
       </section>
 
-      <!-- Recordings pane -->
-      <section class="tab-pane" id="pane-recordings" style="display:none;">
-        <div class="recordings card">
-          <div class="card-body">
-            <h6 class="card-title">Local liveview recordings (.mjpeg)</h6>
-            <div id="rec-list" class="small"></div>
-          </div>
-        </div>
-      </section>
     </div>
   </main>
 
@@ -282,37 +272,20 @@ $$('input[name=cam-mode]').forEach(r => {
   });
 });
 
-// ---------- recording (liveview .mjpeg) ----------
-let isRecording = false;
-async function refreshRecList() {
-  const r = await api('/api/recordings');
-  const el = $('#rec-list');
-  if (!r.recordings.length) { el.textContent = '(none)'; return; }
-  el.innerHTML = '';
-  for (const item of r.recordings) {
-    const row = document.createElement('div');
-    row.className = 'item';
-    const sizeKB = (item.size_bytes / 1024).toFixed(0);
-    row.innerHTML = `
-      <img src="/api/recordings/${item.name}/preview.jpg" alt="">
-      <div class="flex-grow-1">
-        <div>${item.name}</div>
-        <div class="text-muted small">${sizeKB} KB</div>
-      </div>
-      <a class="btn btn-sm btn-outline-secondary" href="/api/recordings/${item.name}/download">DL</a>
-    `;
-    el.appendChild(row);
-  }
-}
-
-$('#btn-rec').addEventListener('click', async () => {
-  if (isRecording) {
-    await postJSON('/api/recordings/stop');
-  } else {
-    await postJSON('/api/recordings/start');
+// ---------- camera-side movie recording (records to SD) ----------
+let isMovieRecording = false;
+$('#btn-movie').addEventListener('click', async () => {
+  try {
+    if (isMovieRecording) {
+      await postJSON('/api/movie/stop');
+    } else {
+      await postJSON('/api/movie/start');
+    }
+  } catch (e) {
+    alert(`movie REC: ${e.message}\n(camera dial must be on the movie position; ` +
+          `setShootMode is not exposed on RX100M5A)`);
   }
   refreshStatus();
-  refreshRecList();
 });
 
 $('#btn-reconnect').addEventListener('click', async (e) => {
@@ -402,16 +375,22 @@ async function refreshStatus() {
   try { s = await api('/api/status'); }
   catch (e) { $('#status-line').textContent = 'down: ' + e.message; return; }
 
-  isRecording = s.recording.recording;
-  const btn = $('#btn-rec');
-  btn.classList.toggle('btn-outline-danger', !isRecording);
-  btn.classList.toggle('btn-danger', isRecording);
-  btn.textContent = isRecording ? '■ Stop recording' : 'Record liveview';
-  if (isRecording) {
-    $('#rec-meta').textContent = `${s.recording.frames} frames · ${s.recording.duration.toFixed(1)}s`;
-  } else {
-    $('#rec-meta').textContent = '';
-  }
+  // Camera-side movie recording state from getEvent.cameraStatus.
+  // RX100M5A reports "MovieRecording" while a movie is actively being
+  // captured on the SD; "MovieWaitRecStart" briefly during arm-up.
+  const camStatus = s.client.camera_status || '';
+  isMovieRecording = camStatus === 'MovieRecording';
+  const isArming = camStatus === 'MovieWaitRecStart' || camStatus === 'MovieWaitRecStop';
+  const movieBtn = $('#btn-movie');
+  movieBtn.classList.toggle('btn-outline-danger', !isMovieRecording);
+  movieBtn.classList.toggle('btn-danger', isMovieRecording);
+  movieBtn.textContent = isMovieRecording ? '■ Stop movie' : '● Movie REC';
+  // Disable when camera dial isn't on movie (startMovieRec absent from
+  // the API list) — saves a 409 round-trip on click.
+  const apis = s.client.available_apis || [];
+  const movieReady = apis.includes('startMovieRec') || apis.includes('stopMovieRec');
+  movieBtn.disabled = !movieReady && !isArming;
+  $('#movie-meta').textContent = isMovieRecording ? camStatus : (isArming ? camStatus : '');
 
   const idle = s.client.idle_seconds;
   const services = (s.client.device || {}).services || {};
@@ -482,7 +461,6 @@ async function refreshStatus() {
 }
 
 refreshStatus();
-refreshRecList();
 setInterval(refreshStatus, 1000);
 </script>
 </body>

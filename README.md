@@ -42,39 +42,42 @@ SODSC_HOST=192.168.122.1 python run.py
 |------|------|------|
 | `SODSC_HOST` | (SSDP 自動発見) | カメラ IP。RX100M5A は AP モードで `192.168.122.1` |
 | `SODSC_DD_PORT` | `64321` | UPnP DD.xml 取得ポート (各サービスポートは DD.xml から動的に取得) |
-| `SODSC_REC_DIR` | `recordings` | ライブビュー録画保存先 (.mjpeg) |
-| `SODSC_DL_DIR` | `downloads` | カメラから取り込んだ画像/動画の保存先 |
+| `SODSC_DL_DIR` | `downloads` | カメラから取り込んだ画像の保存先 |
 | `HOST` | `127.0.0.1` | Flask bind host |
 | `PORT` | `5050` | Flask port (5000 を避ける: macOS Monterey 以降の AirPlay Receiver と衝突) |
 
 ## 機能
 
 - ライブビュー (Sony 独自バイナリストリームをパースして MJPEG として配信)
-- リモートシャッター + AF (半押し) + ズーム
-- 設定変更: shoot mode / ISO / シャッタースピード / F値 / EV
-- カメラモード切替: Remote Shooting ⇔ Contents Transfer
-- カメラ内画像/動画一覧 (サムネ + 元データダウンロード)
-- ライブビューの録画 (`recordings/<timestamp>.mjpeg` に JPEG を連結保存)
+- リモートシャッター + AF (半押し / focusStatus ポーリング付) + ズーム
+- 設定変更: ISO / シャッタースピード / F値 / EV / WB
+- バルブ撮影 / 連写制御
+- 動画記録 (`startMovieRec` / `stopMovieRec` で本体 SD カードへ録画)
+- カメラ内画像/動画一覧 (Camera Remote API avContent または DLNA UPnP 経路自動分岐)
+  - サムネ + Large JPEG (1920×1080 上限) ダウンロード
+  - **DLNA 経路ではフル解像度 RAW (.ARW) は取れない** — Sony 仕様の制約
+- AI 撮影係用 MCP サーバ (Claude Code 等から 18 ツール経由で操作)
 
 未実装 / 別プロジェクト:
 - **仮想カメラデバイス出力** — macOS 13+ 用の CoreMediaIO Camera Extension で
   別途実装予定。本リポジトリの `/stream` を pull する形を想定。
-- 動画記録 (本体 SD への記録: `startMovieRec`) — UI から叩けるようにはまだしてない。
-  `/api/setting` の `shoot_mode=movie` + 別途 `startMovieRec` を組めば可能。
 
-## 録画ファイル (.mjpeg)
+## 動画記録
 
-ライブビューの JPEG フレームを単純連結したファイル。ffmpeg で MP4 にエンコードしたい場合:
+UI の `Movie REC` ボタン (Shoot タブ) または MCP の `start_movie_rec` /
+`stop_movie_rec` ツールで本体 SD カードへ動画を記録します。
 
-```sh
-# MJPEG をそのまま MP4 コンテナに（再エンコードなし、互換性高）
-ffmpeg -framerate 15 -i recordings/20260429_103000.mjpeg -c:v copy out.mp4
+**RX100M5A での前提**:
+- カメラ本体ダイヤルを動画ポジションに合わせる必要あり (`setShootMode` は
+  Smart Remote Control __SAK__ で未提供のため、API 側からモード切替はできない)
+- ダイヤルが動画位置になると `startMovieRec` / `stopMovieRec` が
+  `getAvailableApiList` に出現する → UI の `Movie REC` ボタンが有効化
+- 録画中は `cameraStatus` event slot が `MovieRecording` になる
 
-# H.264 にトランスコード（ファイル小）
-ffmpeg -framerate 15 -i recordings/20260429_103000.mjpeg -c:v libx264 -pix_fmt yuv420p out.mp4
-```
-
-カメラ本体カードに残る高解像度動画は Camera content タブからダウンロードしてください。
+録画したファイルは本体 SD カードに残ります。Wi-Fi 経由で取り込むなら
+本体メニューで「スマートフォンに送る」モードに切り替えて `Camera content`
+タブから DL (DLNA 経由・Large JPEG プレビュー版のみ取得可能、本機種では
+オリジナル動画は SD 直接 or USB 経由でないと取れません)。
 
 ## 制約
 
@@ -101,21 +104,24 @@ Flask が立っている前提で、`mcp_server/server.py` が **Claude Code / C
 Desktop 等の MCP クライアントに stdio で接続できるブリッジ** になります。
 カメラを「AI に渡せるツール」として公開する形:
 
-ツール一覧 (18 個):
+ツール一覧:
 
 | カテゴリ | tool | 説明 |
 |---|---|---|
-| introspect | `get_status` | 現状 (running/idle/available_apis/battery など) |
+| introspect | `get_status` | 現状 (running/idle/available_apis/focus_status/exposure など) |
 | introspect | `reconnect` | 手動再接続トリガ |
+| introspect | `refresh_services` | DD.xml 再取得 (本体側モード切替検知) |
 | vision | `get_liveview_frame` | 最新ライブビュー JPEG を Image で返す (AI が見る) |
-| shoot | `take_picture(save=True)` | シャッター。postview を Image で返す + downloads/ に保存 |
+| shoot | `take_picture(save=True)` | 半押し → focusStatus 待ち → シャッター → postview を Image で返す + 保存 |
 | shoot | `half_press(on)` | 半押し AF (位置は本体側で決まる) |
 | shoot | `zoom(direction, movement)` | ズーム |
 | exposure | `set_iso`, `set_shutter`, `set_fnumber`, `set_exposure_compensation` | 露出 |
 | exposure | `set_white_balance_auto`, `set_white_balance_kelvin(K)` | WB |
-| burst | `start_burst` / `stop_burst` | 連写制御 (postview URL のリスト返却) |
+| burst | `start_burst` / `stop_burst` | 連写 (postview URL リスト返却) |
 | bulb | `start_bulb` / `stop_bulb` | バルブ撮影 |
-| storage | `list_saved_pictures`, `get_saved_picture(name)` | 保存済を覗く |
+| movie | `start_movie_rec` / `stop_movie_rec` | 本体 SD への動画記録 |
+| content | `list_camera_pictures` / `download_camera_picture` | カメラ内画像 (avContent or DLNA 自動分岐) |
+| storage | `list_saved_pictures` / `get_saved_picture(name)` | host downloads/ |
 
 ### Claude Code に登録する
 

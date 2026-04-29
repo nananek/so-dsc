@@ -10,7 +10,6 @@ from flask import Flask
 
 from .content import ContentBrowser
 from .discover import discover, from_host
-from .recording import RecordingManager
 from .sony import SonyClient
 from .views import bp
 
@@ -45,7 +44,6 @@ def create_app() -> Flask:
                 list(device.services),
             )
 
-    rec_dir = Path(os.environ.get("SODSC_REC_DIR", "recordings")).resolve()
     dl_dir = Path(os.environ.get("SODSC_DL_DIR", "downloads")).resolve()
 
     client = SonyClient(device)
@@ -53,7 +51,6 @@ def create_app() -> Flask:
     atexit.register(client.stop)
 
     app.config["SONY_CLIENT"] = client
-    app.config["SONY_RECORDER"] = RecordingManager(client, rec_dir)
     app.config["SONY_BROWSER"] = ContentBrowser(client, dl_dir)
     app.register_blueprint(bp)
     return app
