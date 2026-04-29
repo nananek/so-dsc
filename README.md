@@ -1,8 +1,17 @@
 # so-dsc
 
-**サードパーティ実装 (unofficial)**。Sony DSC シリーズ (動作確認: **DSC-RX100M5A**)
-の **Camera Remote API** を再実装した Flask ビューア + 操作 + コンテンツ取り込み。
-旧 PlayMemories Mobile の代替。
+**非公式 / サードパーティ実装 (unofficial third-party)**。Sony DSC シリーズ
+(動作確認: **DSC-RX100M5A**) の **Camera Remote API** を再実装した Flask
+ビューア + 操作 + コンテンツ取り込み + AI 撮影係用 MCP サーバ。旧
+PlayMemories Mobile / Imaging Edge Mobile の代替。
+
+> ⚠️  **本リポジトリは Sony Group Corporation / Sony Imaging Products &
+> Solutions Inc. と一切関係ありません。** Sony が公開していた Camera
+> Remote API SDK の公開仕様 (`developer.sony.com`、現在は EOL) を参照して、
+> サードパーティが独自に実装したクライアントです。Sony 公式アプリのコード
+> は含まれておらず、暗号化や保護機構を回避するものでもありません。
+> "Sony"、"PlayMemories"、"Imaging Edge"、"Creators' App"、"DSC"、
+> "RX100" は Sony Group Corporation の商標です。
 
 プロトコル仕様: [docs/protocol.md](docs/protocol.md)
 最小再現 (依存なし): [scripts/grab_frame.py](scripts/grab_frame.py)
@@ -110,28 +119,28 @@ Desktop 等の MCP クライアントに stdio で接続できるブリッジ** 
 
 ### Claude Code に登録する
 
+`.mcp.json.example` をコピーして絶対パスを埋めるか、`claude mcp add` で
+プロジェクトスコープに追加します。`.mcp.json` 自体は `.gitignore` 済み
+(ホスト依存)。
+
 ```sh
-# Flask は別タームで起動済みの想定
+# Flask は別タームで起動しておく
 SODSC_HOST=192.168.122.1 python run.py
 
-# プロジェクトルートで:
-claude mcp add so-dsc -- \
-  /path/to/so-dsc/.venv/bin/python -m mcp_server.server
+# 方法 A: claude CLI で登録 (推奨)
+claude mcp add so-dsc -s project \
+  -e SODSC_API_BASE=http://127.0.0.1:5050 \
+  -e PYTHONPATH=$(pwd) \
+  -- $(pwd)/.venv/bin/python -m mcp_server.server
 
-# あるいは ~/.claude/mcp.json に手で書く場合:
-# {
-#   "mcpServers": {
-#     "so-dsc": {
-#       "command": "/path/to/so-dsc/.venv/bin/python",
-#       "args": ["-m", "mcp_server.server"],
-#       "env": { "SODSC_API_BASE": "http://127.0.0.1:5050" }
-#     }
-#   }
-# }
+# 方法 B: 手動コピー
+cp .mcp.json.example .mcp.json
+# → .mcp.json を開き <ABSOLUTE_PATH_TO_REPO> を実パスに置換
 ```
 
 `SODSC_API_BASE` を変えれば別ポートの Flask に向けられます (例: dev で
-`5051` を使ってる場合)。
+`5051` を使ってる場合)。登録後、Claude Code を再起動するとツールが認識
+されます (`mcp__so-dsc__get_status` など)。
 
 ### 使用感
 
@@ -146,6 +155,34 @@ Claude に `撮影係になって` と頼むと:
 **AF 位置だけは指定不可** (RX100M5A 制限)。本体側で Focus Area を決めてお
 くか、`half_press` 中に画面中央へ被写体が来るよう人間 or AI が構図を寄
 せる運用。
+
+## Disclaimer / 免責事項
+
+This project is an independent, third-party reimplementation of the
+publicly-documented **Camera Remote API** that Sony released as a beta
+SDK (now end-of-life). It is **not affiliated with, endorsed by, or
+sponsored by Sony Group Corporation, Sony Imaging Products & Solutions
+Inc., or any of their subsidiaries**. No source code from any Sony
+application, SDK, or firmware is included or redistributed. The project
+does not bypass any authentication, DRM, or content-protection
+mechanism.
+
+Trademarks "Sony", "PlayMemories", "Imaging Edge", "Creators' App",
+"Camera Remote API", "DSC", "RX100", and any associated logos are
+property of Sony Group Corporation. They are referenced here solely
+for compatibility documentation.
+
+Use this software at your own risk. The MIT license below disclaims
+all warranties.
+
+本リポジトリは Sony 公式の Camera Remote API ベータ SDK (現在 EOL) の
+**公開仕様** を参照したサードパーティ独自実装です。**Sony Group Corporation
+および関連会社とは一切関係ありません**。Sony 公式アプリ・SDK・ファーム
+ウェアのソースコードは含まれていません。認証・DRM・保護機構を回避する
+ものでもありません。商標 ("Sony"、"PlayMemories"、"Imaging Edge"、
+"Creators' App"、"Camera Remote API"、"DSC"、"RX100" 等) はすべて Sony
+Group Corporation に帰属し、互換性を説明する目的でのみ言及しています。
+本ソフトウェアは利用者の自己責任でお使いください。
 
 ## License
 

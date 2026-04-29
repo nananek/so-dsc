@@ -4,6 +4,12 @@ __pycache__/
 venv/
 .env
 
+# Per-host MCP config — see .mcp.json.example
+.mcp.json
+
+# Claude Code per-user permission grants
+.claude/settings.local.json
+
 # Reverse engineering / working set — not for the repo
 work/
 

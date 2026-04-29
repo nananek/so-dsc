@@ -1,5 +1,15 @@
 # Sony Camera Remote API (PlayMemories Mobile 経路) 通信メモ
 
+> **第三者注記** — 本ドキュメントは Sony Group Corporation / Sony Imaging
+> Products & Solutions Inc. による公式資料ではありません。Sony が公開して
+> いた **Camera Remote API ベータ SDK** (developer.sony.com、現在 EOL) の
+> 公開仕様および筆者の動作観察に基づくサードパーティの整理です。Sony 公式
+> アプリ (PlayMemories Mobile / Imaging Edge Mobile) のソースコードや
+> リバースエンジニアリング成果物は含まれていません。暗号化・認証・DRM な
+> ど保護機構を回避する内容も一切含みません。"Sony"、"PlayMemories"、
+> "Imaging Edge"、"Camera Remote API"、"DSC"、"RX100" は Sony Group
+> Corporation の商標です。
+
 旧 PlayMemories Mobile (PMM) アプリが対応カメラと話す **Camera Remote API**
 の要点まとめ。Sony が公式に SDK / API リファレンスを公開していたもの (現在は
 EOL で developer.sony.com 上は到達不能だが、SDK ZIP やサンプル / API リファ

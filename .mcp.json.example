@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "so-dsc": {
+      "type": "stdio",
+      "command": "<ABSOLUTE_PATH_TO_REPO>/.venv/bin/python",
+      "args": [
+        "-m",
+        "mcp_server.server"
+      ],
+      "env": {
+        "SODSC_API_BASE": "http://127.0.0.1:5050",
+        "PYTHONPATH": "<ABSOLUTE_PATH_TO_REPO>"
+      }
+    }
+  }
+}
