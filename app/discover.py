@@ -23,12 +23,27 @@ NS_AV = "urn:schemas-sony-com:av"
 
 @dataclass
 class SonyDevice:
-    """Resolved endpoint for a Sony Camera Remote API device."""
+    """Resolved endpoint for a Sony device.
+
+    `services` holds Camera Remote API JSON-RPC services (camera /
+    avContent / system / accessControl etc.) when the in-camera app
+    advertises them.
+
+    `content_directory_url` is the SOAP control URL for the standard
+    UPnP ContentDirectory service. RX100M5A exposes this **only when
+    the in-camera app is "Send to Smartphone"** — at the same time the
+    JSON-RPC services disappear. Other models may expose both at once.
+    """
 
     friendly_name: str
     model_name: str
     udn: str
     services: dict[str, str]  # {"camera": "http://.../sony/camera", ...}
+    content_directory_url: Optional[str] = None
+    # IP/host of the camera. Kept separately because services may be
+    # empty (camera offline at boot, mode change with no overlap) and
+    # refresh paths still need to know who to ask.
+    host: Optional[str] = None
 
     def url(self, service: str) -> Optional[str]:
         return self.services.get(service)
@@ -88,23 +103,28 @@ def from_host(host: str, dd_port: int = 64321) -> SonyDevice:
     pick up the camera's actual API port (RX100M5A uses 10000, others use
     8080 — varies by model and even by firmware), then falls back to a
     hardcoded service map if the camera hasn't booted its UPnP server yet.
+
+    Both DD.xml flavors are handled:
+
+    * "SonyRemoteCamera" (Smart Remote Control mode): JSON-RPC services
+    * "SonyDigitalMediaServer" (Send-to-Smartphone mode): standard UPnP
+      ContentDirectory at /upnp/control/ContentDirectory
     """
     location = f"http://{host}:{dd_port}/dd.xml"
     dev = _fetch_dd(location)
     if dev is not None:
         return dev
-    log.warning("DD.xml fetch from %s failed; using fallback service map", location)
-    base = f"http://{host}:8080/sony"
+    log.warning(
+        "DD.xml fetch from %s failed; returning empty device — "
+        "watchdog will retry once the camera is reachable",
+        location,
+    )
     return SonyDevice(
         friendly_name="(static)",
         model_name="(unknown)",
         udn="",
-        services={
-            "camera": f"{base}/camera",
-            "system": f"{base}/system",
-            "avContent": f"{base}/avContent",
-            "guide": f"{base}/guide",
-        },
+        services={},
+        host=host,
     )
 
 
@@ -146,13 +166,47 @@ def _fetch_dd(location: str) -> Optional[SonyDevice]:
         if kind and action:
             services[kind.strip()] = f"{action.strip().rstrip('/')}/{kind.strip()}"
 
-    if not services:
-        log.warning("DD.xml has no Sony service entries")
+    # Standard UPnP ContentDirectory — present in "Send to Smartphone" mode
+    # in place of the JSON-RPC services. We extract the controlURL and
+    # join it with the device base so it's an absolute URL the SOAP
+    # client can post to.
+    content_dir_url: Optional[str] = None
+    base_url = location.rsplit("/", 1)[0]
+    for svc in root.iter():
+        st = svc.tag.rsplit("}", 1)[-1]
+        if st != "service":
+            continue
+        type_text = ""
+        ctrl_text = ""
+        for child in svc:
+            tag = child.tag.rsplit("}", 1)[-1]
+            if tag == "serviceType":
+                type_text = (child.text or "").strip()
+            elif tag == "controlURL":
+                ctrl_text = (child.text or "").strip()
+        if "ContentDirectory" in type_text and ctrl_text:
+            if ctrl_text.startswith("http://") or ctrl_text.startswith("https://"):
+                content_dir_url = ctrl_text
+            elif ctrl_text.startswith("/"):
+                # ctrl is path-only — join with the dd.xml host:port
+                from urllib.parse import urlparse as _u
+                u = _u(location)
+                content_dir_url = f"{u.scheme}://{u.netloc}{ctrl_text}"
+            else:
+                content_dir_url = f"{base_url}/{ctrl_text}"
+            break
+
+    if not services and not content_dir_url:
+        log.warning("DD.xml has no Sony service entries and no ContentDirectory")
         return None
 
+    from urllib.parse import urlparse as _u
+    parsed_loc = _u(location)
     return SonyDevice(
         friendly_name=_text("friendlyName"),
         model_name=_text("modelName"),
         udn=_text("UDN"),
         services=services,
+        content_directory_url=content_dir_url,
+        host=parsed_loc.hostname,
     )

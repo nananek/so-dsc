@@ -92,6 +92,15 @@ def api_status():
     })
 
 
+@bp.route("/api/refresh", methods=["POST"])
+def api_refresh():
+    """Re-fetch DD.xml only — pick up service changes from a body-side
+    in-camera app switch (Smart Remote ↔ Send to Smartphone) without
+    tearing down liveview."""
+    services = _client().refresh_services()
+    return jsonify({"services": services})
+
+
 @bp.route("/api/reconnect", methods=["POST"])
 def api_reconnect():
     """Manually trigger a full reconnect (DD.xml refresh + restart).

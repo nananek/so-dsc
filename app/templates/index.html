@@ -9,8 +9,13 @@
     .stage { background: #111; border-radius: .5rem; padding: .5rem; position: relative; }
     .stage img { display: block; width: 100%; height: auto; max-height: 75vh; object-fit: contain; background: #000; border-radius: .25rem; }
     .stage.no-signal img { opacity: .25; }
-    .stage .overlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; color: #ddd; pointer-events: none; }
-    .stage.no-signal .overlay { display: flex; }
+    .stage.no-shoot-mode img { opacity: .08; filter: grayscale(1) blur(2px); }
+    .stage .overlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; color: #ddd; pointer-events: none; padding: 1rem; }
+    .stage.no-signal .overlay,
+    .stage.no-shoot-mode .overlay { display: flex; }
+    .shoot-controls.disabled { opacity: .35; pointer-events: none; }
+    .mode-banner { display: none; }
+    .mode-banner.show { display: block; }
     .meta { font-variant-numeric: tabular-nums; }
     .recordings .item, .content .item { display: flex; gap: .75rem; align-items: center; padding: .25rem 0; border-bottom: 1px solid #eee; }
     .recordings .item img, .content .item img { width: 56px; height: 56px; object-fit: cover; border-radius: .25rem; background: #222; }
@@ -40,18 +45,24 @@
     <div class="tab-content">
       <!-- Shoot pane -->
       <section class="tab-pane show active" id="pane-shoot">
+        <div class="alert alert-warning py-2 small mb-2 mode-banner" id="banner-no-shoot">
+          カメラが <strong>シューティング系 API を出していない状態</strong> です
+          (Send-to-Smartphone モード or 電源 OFF)。本体側で
+          <strong>「スマートリモコン」</strong> を起動するか、電源を入れ直してください。
+          サービスが戻ったら <code>Reconnect</code> で復帰します。
+        </div>
         <div class="row g-3">
           <div class="col-lg-8">
             <div class="stage" id="stage">
               <img src="/stream" alt="live stream" id="live">
               <div class="overlay">
                 <div class="text-center">
-                  <div class="fs-5 mb-2">no signal</div>
-                  <div class="small text-muted" id="no-signal-hint">switch the camera to Remote Shooting</div>
+                  <div class="fs-5 mb-2" id="overlay-title">no signal</div>
+                  <div class="small text-muted" id="overlay-hint">switch the camera to Remote Shooting</div>
                 </div>
               </div>
             </div>
-            <div class="d-flex gap-2 mt-2 align-items-center flex-wrap">
+            <div class="d-flex gap-2 mt-2 align-items-center flex-wrap shoot-controls" id="shoot-controls">
               <button class="btn btn-danger" id="btn-shoot">● Shoot</button>
               <button class="btn btn-outline-secondary btn-sm" id="btn-half" title="Hold for AF">AF (hold)</button>
               <div class="btn-group btn-group-sm" role="group" aria-label="Zoom">
@@ -127,8 +138,16 @@
 
       <!-- Content pane -->
       <section class="tab-pane" id="pane-content" style="display:none;">
+        <div class="alert alert-info py-2 small mb-2">
+          カメラ内画像の閲覧/取り込みはカメラ本体側で
+          <strong>「スマートフォンに送る」</strong> モードに切り替えてから
+          <code>Refresh services</code> → <code>Load list</code> の順に。
+          切り替え中はライブビューが止まります。
+        </div>
         <div class="d-flex align-items-center mb-2 gap-2">
+          <button class="btn btn-sm btn-outline-secondary" id="btn-content-refresh">Refresh services</button>
           <button class="btn btn-sm btn-outline-primary" id="btn-content-load">Load list</button>
+          <span class="small text-muted" id="content-services">services: ?</span>
           <span class="small text-muted" id="content-meta"></span>
           <span class="small text-warning ms-auto" id="content-warning"></span>
         </div>
@@ -316,6 +335,18 @@ $('#btn-reconnect').addEventListener('click', async (e) => {
 });
 
 // ---------- camera content browser ----------
+$('#btn-content-refresh').addEventListener('click', async () => {
+  const meta = $('#content-services');
+  meta.textContent = 'refreshing...';
+  try {
+    const r = await postJSON('/api/refresh');
+    const names = Object.keys(r.services || {}).sort();
+    meta.textContent = `services: ${names.join(', ') || '(none)'}`;
+  } catch (e) {
+    meta.textContent = `refresh failed: ${e.message}`;
+  }
+});
+
 $('#btn-content-load').addEventListener('click', async () => {
   const meta = $('#content-meta');
   const warn = $('#content-warning');
@@ -323,12 +354,22 @@ $('#btn-content-load').addEventListener('click', async () => {
   meta.textContent = 'loading...';
   try {
     const r = await api('/api/content/list?offset=0&count=200');
+    if (r.note) {
+      warn.textContent = r.note;
+    }
     meta.textContent = `${(r.items || []).length} / ${r.total} items (source: ${r.source || 'n/a'})`;
     const grid = $('#content-grid');
     grid.innerHTML = '';
     for (const it of (r.items || [])) {
       const tile = document.createElement('div');
       tile.className = 'tile';
+      // Project every metadata field onto data-* so the UI can sort,
+      // filter, group, badge, etc. without re-fetching. Skip null /
+      // undefined; keep URLs too (handy for "open original in tab" etc.).
+      for (const [k, v] of Object.entries(it)) {
+        if (v === null || v === undefined) continue;
+        tile.dataset[k] = typeof v === 'string' ? v : JSON.stringify(v);
+      }
       const thumb = it.thumbnailUrl ? `/api/content/proxy?url=${encodeURIComponent(it.thumbnailUrl)}` : '';
       const orig = it.originalUrl ? `/api/content/proxy?url=${encodeURIComponent(it.originalUrl)}&download=1&name=${encodeURIComponent(it.originalFilename || '')}` : '';
       const view = it.largeUrl || it.originalUrl;
@@ -343,6 +384,12 @@ $('#btn-content-load').addEventListener('click', async () => {
       `;
       grid.appendChild(tile);
     }
+    // Newest first by createdTime (ISO 8601 strings sort lexicographically).
+    // Reordering tiles in-place rather than pre-sorting the items array
+    // keeps the data-* path the single source of truth.
+    Array.from(grid.children)
+      .sort((a, b) => (b.dataset.createdTime || '').localeCompare(a.dataset.createdTime || ''))
+      .forEach(el => grid.appendChild(el));
   } catch (e) {
     meta.textContent = '';
     warn.textContent = String(e);
@@ -367,12 +414,40 @@ async function refreshStatus() {
   }
 
   const idle = s.client.idle_seconds;
+  const services = (s.client.device || {}).services || {};
+  const inShootMode = !!services.camera;
+  const cdMode = !!(s.client.device || {}).content_directory_url;
   const noSignal = idle === null || idle > 3;
-  $('#stage').classList.toggle('no-signal', noSignal);
+
+  // Three visual states for the Shoot pane:
+  //   inShootMode + streaming        → live preview, controls active
+  //   inShootMode + no recent frame  → "no signal" overlay (existing path)
+  //   not inShootMode                → "switch app" overlay + controls dimmed
+  $('#stage').classList.toggle('no-signal', inShootMode && noSignal);
+  $('#stage').classList.toggle('no-shoot-mode', !inShootMode);
+  $('#shoot-controls').classList.toggle('disabled', !inShootMode);
+  $('#banner-no-shoot').classList.toggle('show', !inShootMode);
+
+  if (!inShootMode) {
+    $('#overlay-title').textContent = cdMode
+      ? 'Send-to-Smartphone mode'
+      : 'camera offline';
+    $('#overlay-hint').textContent = cdMode
+      ? 'switch the in-camera app to スマートリモコン on the body to shoot'
+      : 'waiting for the camera to come back — auto reconnect on';
+  } else {
+    $('#overlay-title').textContent = 'no signal';
+    $('#overlay-hint').textContent = idle === null
+      ? 'no frames received yet'
+      : `${idle.toFixed(1)}s without a frame — try Reconnect`;
+  }
+
   const idleStr = idle === null ? 'no frames yet' : `${idle.toFixed(1)}s idle`;
-  const mode = s.client.mode || '?';
+  const modeLabel = inShootMode
+    ? 'Smart Remote'
+    : (cdMode ? 'Send-to-Smartphone' : 'offline');
   $('#status-line').textContent =
-    `[${mode}] ${s.client.frames_seen} frames · seq=${s.client.seq} · ${idleStr} · subs=${s.client.subscribers}`;
+    `[${modeLabel}] ${s.client.frames_seen} frames · seq=${s.client.seq} · ${idleStr} · subs=${s.client.subscribers}`;
 
   // Reflect device-side mode change in the radio buttons (server might toggle
   // due to user pressing the camera's Wi-Fi button, etc).

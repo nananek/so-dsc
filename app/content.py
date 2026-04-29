@@ -1,4 +1,13 @@
-"""avContent service wrapper: browse and download camera-stored media.
+"""avContent / UPnP wrapper: browse and download camera-stored media.
+
+Two backends, picked at request time based on which the camera
+currently advertises:
+
+* **Camera Remote API avContent** (JSON-RPC) — when the in-camera app is
+  "Send to Smartphone" *on cameras that expose this service in that
+  mode*. Supports full original (incl. RAW) download.
+* **UPnP ContentDirectory** (SOAP / DLNA) — RX100M5A's only path in
+  "Send to Smartphone" mode. JPEG previews only (no RAW).
 
 Wire format and method list: ../docs/protocol.md
 """
@@ -13,6 +22,7 @@ from typing import Any, Optional
 import requests
 
 from .sony import SonyApiError, SonyClient
+from . import upnp
 
 log = logging.getLogger(__name__)
 
@@ -104,23 +114,65 @@ class ContentBrowser:
         view: str = DEFAULT_VIEW,
         sort: str = DEFAULT_SORT,
     ) -> dict:
-        # Try a soft mode switch only when the camera advertises it. Bodies
-        # that don't (RX100M5A in Smart Remote) will need a manual app
-        # switch on the body — we don't tear down the liveview for nothing.
+        # Try a soft mode switch only when the camera advertises it. RX100M5A
+        # in Smart Remote does not — the user has to switch in-camera apps
+        # to "Send to Smartphone" on the body, at which point avContent
+        # becomes advertised.
         if self.client.supports("setCameraFunction"):
             try:
                 self.enter_transfer_mode()
             except ModeSwitchUnsupported:
                 pass
 
-        if "avContent" not in self.client.device.services:
-            return {
-                "source": None,
-                "total": 0,
-                "items": [],
-                "note": "avContent service not advertised — switch the camera "
-                        "app to 'Send to Smartphone' on the body",
-            }
+        # Re-fetch DD.xml so we pick up service changes from a body-side
+        # app switch. Cheap (one HTTP GET).
+        self.client.refresh_services()
+
+        # Path A: Camera Remote API avContent (JSON-RPC). Available on
+        # some Sony cameras in Contents Transfer mode.
+        if "avContent" in self.client.device.services:
+            return self._list_avcontent(offset, count, view, sort)
+
+        # Path B: UPnP ContentDirectory (DLNA SOAP). RX100M5A only.
+        cd_url = self.client.device.content_directory_url
+        if cd_url:
+            return self._list_upnp(cd_url, offset, count)
+
+        return {
+            "source": None,
+            "total": 0,
+            "items": [],
+            "note": (
+                "Neither avContent nor UPnP ContentDirectory is advertised. "
+                "Switch the in-camera app to 'スマートフォンに送る' (Send to "
+                "Smartphone) on the camera body, then call this endpoint again."
+            ),
+        }
+
+    def _list_upnp(self, control_url: str, offset: int, count: int) -> dict:
+        """ContentDirectory SOAP path (RX100M5A in Send-to-Smartphone)."""
+        # walk_photos yields newest-first; slice into our offset/count window.
+        items: list[dict] = []
+        for i, parsed in enumerate(upnp.walk_photos(control_url, max_items=offset + count)):
+            if i < offset:
+                continue
+            items.append(parsed)
+            if len(items) >= count:
+                break
+        return {
+            "source": "upnp:ContentDirectory",
+            "total": len(items) + offset,  # we don't get a real total here
+            "items": items,
+            "note": (
+                "UPnP/DLNA path — JPEG previews only (no RAW originals). "
+                "originalUrl points to the largest available JPEG."
+            ),
+        }
+
+    def _list_avcontent(
+        self, offset: int, count: int, view: str, sort: str
+    ) -> dict:
+        """JSON-RPC avContent path (Camera Remote API)."""
 
         sources = self._sources()
         if not sources:

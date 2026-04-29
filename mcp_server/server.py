@@ -71,6 +71,50 @@ def reconnect() -> str:
     return json.dumps(_post("/api/reconnect"), indent=2)
 
 
+@mcp.tool()
+def refresh_services() -> str:
+    """Re-fetch the camera's DD.xml service list. Lightweight — does NOT
+    tear down liveview. Call this when the user has switched in-camera
+    apps on the camera body (Smart Remote ↔ Send to Smartphone). After a
+    switch to Send to Smartphone, `avContent` appears and the
+    list_camera_pictures / download_camera_picture tools start working;
+    after a switch back, the `camera` service comes back and shooting
+    tools work again."""
+    return json.dumps(_post("/api/refresh"), indent=2)
+
+
+# ---------- camera-side picture browser (Send-to-Smartphone mode) ----------
+
+@mcp.tool()
+def list_camera_pictures(offset: int = 0, count: int = 100) -> str:
+    """List pictures stored on the camera SD card. Requires the camera
+    body to be in **Send-to-Smartphone mode** (avContent service must be
+    advertised). If the response contains a `note` saying avContent isn't
+    available, ask the user to switch the in-camera app on the camera
+    body to 'スマートフォンに送る', then call refresh_services and retry.
+
+    Each item has an `originalUrl` that can be passed to
+    download_camera_picture for full-resolution download, plus a
+    `thumbnailUrl` and `largeUrl` for previews."""
+    return json.dumps(
+        _get("/api/content/list", offset=offset, count=count), indent=2
+    )
+
+
+@mcp.tool()
+def download_camera_picture(url: str, name: str | None = None) -> str:
+    """Download a camera-side picture (full resolution from SD card) to
+    the host's downloads/ directory. Pass the `originalUrl` from a
+    list_camera_pictures item. Returns the saved local path and size.
+
+    Use list_saved_pictures + get_saved_picture afterwards to read it
+    back as an Image."""
+    body = {"url": url}
+    if name:
+        body["name"] = name
+    return json.dumps(_post("/api/content/download", body), indent=2)
+
+
 # ---------- liveview (vision) ----------
 
 @mcp.tool()

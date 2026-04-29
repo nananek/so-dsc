@@ -148,6 +148,56 @@ class SonyClient:
         except (SonyApiError, requests.RequestException) as e:
             log.debug("stopRecMode: %s", e)
 
+    def refresh_services(self) -> dict[str, str]:
+        """Re-fetch DD.xml and update self.device in place.
+
+        Cheap (one HTTP GET) and **does not tear down liveview / event
+        loop**. The camera changes its advertised services when you
+        switch in-camera apps on the body — Smart Remote Control
+        exposes the `camera` service, Send-to-Smartphone exposes
+        UPnP ContentDirectory (and on some models avContent). Call this
+        whenever you suspect a mode change or are recovering from an
+        unreachable camera.
+        """
+        from .discover import from_host  # avoid circular import at load
+
+        host = self.device.host
+        # Old services dicts (built before host was tracked) don't have
+        # one — fall back to extracting from any service URL.
+        if not host:
+            for url in self.device.services.values():
+                try:
+                    host = urlparse(url).hostname
+                    if host:
+                        break
+                except Exception:
+                    pass
+        if not host:
+            log.debug("refresh_services: no host known, skipping")
+            return dict(self.device.services)
+        try:
+            new_dev = from_host(host)
+        except Exception as e:  # noqa: BLE001
+            log.debug("refresh_services: DD.xml fetch failed: %s", e)
+            return dict(self.device.services)
+        # Only overwrite when DD.xml actually responded — `from_host`
+        # returns an empty `(static)` device when the fetch failed.
+        if new_dev.friendly_name != "(static)":
+            old = set(self.device.services)
+            new = set(new_dev.services)
+            old_cd = bool(self.device.content_directory_url)
+            new_cd = bool(new_dev.content_directory_url)
+            if old != new or old_cd != new_cd:
+                log.info(
+                    "services changed: %s%s → %s%s",
+                    sorted(old), " +CD" if old_cd else "",
+                    sorted(new), " +CD" if new_cd else "",
+                )
+            # Preserve host even if new_dev didn't set it.
+            new_dev.host = new_dev.host or host
+            self.device = new_dev
+        return dict(self.device.services)
+
     def reconnect(self) -> None:
         """Full re-init after the camera has been off / away.
 
@@ -242,7 +292,11 @@ class SonyClient:
     ) -> Any:
         url = self.device.url(service)
         if url is None:
-            raise RuntimeError(f"unknown service: {service}")
+            # Service isn't advertised in the current camera mode (e.g.
+            # `camera` is gone when the body is in Send-to-Smartphone).
+            # Surface as a SonyApiError so existing
+            # try/except SonyApiError handlers don't have to special-case it.
+            raise SonyApiError(method, -2, f"service '{service}' not advertised")
         body = {
             "method": method,
             "params": params or [],
@@ -509,6 +563,15 @@ class SonyClient:
 
     def start_liveview(self, retries: int = 4, retry_delay: float = 1.5) -> None:
         if self._lv_running:
+            return
+        # If the camera doesn't currently advertise the `camera` service
+        # (e.g. it is in "Send to Smartphone" mode), liveview is not
+        # available — don't bother retrying. The watchdog calls this
+        # repeatedly when a reconnect is needed; without this guard it
+        # would loop forever trying to startLiveview against an absent
+        # service.
+        if "camera" not in self.device.services:
+            log.debug("start_liveview: camera service not advertised — skipping")
             return
         # Right after a mode change or a stopLiveview, the camera can return
         # error [1] "Any" / [14] "Illegal State" briefly while it re-arms.
@@ -852,19 +915,40 @@ class SonyClient:
             t.join(timeout=2.0)
 
     def _watchdog_loop(self) -> None:
-        """Detect stuck liveview / dead camera and trigger a full reconnect.
+        """Detect stuck liveview / dead camera and trigger reconnects.
 
-        Two triggers:
-        - The liveview reader thread set _needs_reconnect (gave up after N
-          consecutive stream failures, or saw the URL go bad).
-        - The stream is supposedly running but no frames have arrived for
-          longer than _idle_reconnect_threshold seconds — typical signature
-          of a camera power-cycle that we missed."""
+        Triggers:
+        - The liveview reader thread set _needs_reconnect.
+        - Stream supposedly running but no frames arrived for
+          _idle_reconnect_threshold seconds (likely power-cycle).
+        - liveview NOT running and the `camera` service has reappeared
+          since last check (e.g. user toggled the in-camera app on the
+          body back to Smart Remote, or the camera came back online).
+
+        Holds off on reconnect when the camera is reachable but does not
+        currently advertise the `camera` service (Send-to-Smartphone
+        mode) — in that case the avContent / UPnP paths work, but
+        liveview / shoot do not."""
         backoff = 2.0
         while self._wd_running:
             time.sleep(2.0)
 
-            # Two reconnect signals are equivalent — coalesce here.
+            # While not streaming, keep services fresh — that's how we
+            # learn that the camera came back online or the user
+            # switched in-camera apps on the body.
+            if not self._lv_running:
+                try:
+                    self.refresh_services()
+                except Exception as e:  # noqa: BLE001
+                    log.debug("watchdog refresh_services failed: %s", e)
+                # If `camera` is advertised and we're not already trying
+                # to reconnect, schedule one. This catches the
+                # "boot-while-camera-was-asleep" and the
+                # "Send-to-Smartphone → Smart Remote" transitions.
+                if "camera" in self.device.services and not self._needs_reconnect:
+                    log.info("watchdog: camera service available — requesting reconnect")
+                    self._needs_reconnect = True
+
             stalled = False
             if self._lv_running and self._stats.last_frame_at:
                 idle = time.time() - self._stats.last_frame_at
@@ -879,6 +963,16 @@ class SonyClient:
                 backoff = 2.0
                 continue
 
+            if "camera" not in self.device.services:
+                # Camera reachable in another mode (or not reachable at
+                # all). Don't loop on liveview reconnect.
+                log.debug(
+                    "watchdog: camera service not advertised — holding off on reconnect"
+                )
+                self._needs_reconnect = False
+                self._lv_running = False
+                continue
+
             try:
                 self.reconnect()
             except Exception as e:  # noqa: BLE001
@@ -887,10 +981,6 @@ class SonyClient:
             if self._lv_running:
                 backoff = 2.0
             else:
-                # Camera still not reachable. Sleep with exponential
-                # backoff (capped at 30s) before the next attempt, so we
-                # don't spam reconnects every 2 seconds against a dead
-                # endpoint.
                 log.info("watchdog: liveview not up, retry in %.0fs", backoff)
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
@@ -907,6 +997,8 @@ class SonyClient:
                 "friendly_name": self.device.friendly_name,
                 "model_name": self.device.model_name,
                 "services": self.device.services,
+                "content_directory_url": self.device.content_directory_url,
+                "host": self.device.host,
             },
             "frames_seen": self._stats.frames_seen,
             "frames_dropped": self._stats.frames_dropped,
